@@ -5,9 +5,9 @@ import os
 import signal
 import queue
 import json
+import sys
 from pyconstrobe import ProcessManager
 
-FOM_PATH = "C:\\dev\\source\\constrobe\\Test.fed"
 FEDERATION_NAME = "SimulationFederation"
 #LISTENER_PATH = "C:\\dev\\tools\\certi\\ListenerFederate\\x64\\Release\\ListenerFederate.exe"
 LISTENER_PATH = "C:\\dev\\tools\\certi\\ListenerFederate\\x64\\Debug\\ListenerFederate.exe"
@@ -24,14 +24,13 @@ def send_control(p, line):
         pass
 
 def handle_new_line(line,proc):
-    #print(f"[FROM C++] {line.strip()}")
+    print(f"[FROM C++] {line.strip()}")
     if "Queue3.CurCount:" in line:
         parts = line.split("Queue3.CurCount:")
         if len(parts) > 1:
             number_str = parts[1].strip().split()[0]
             count = int(number_str)
-            #print("Queue3.CurCount =", count)
-            if count>=5:
+            if count == 5:
                 message = "CONTROLSIGNAL SimA REMOVEFROMQUEUE Queue3 5\n"
                 send_control(proc,message)
                 message = "CONTROLSIGNAL SimB ADDTOQUEUE Queue2 5\n"
@@ -41,7 +40,7 @@ def handle_new_line(line,proc):
         if len(parts) > 1:
             number_str = parts[1].strip().split()[0]
             count = int(number_str)
-            if count > 40:
+            if count == 15:
                 print("TIME TO SHUT THIS DOWN")
                 events.put(("shutdown", None))  
                 shutdown_now.set()
@@ -53,7 +52,7 @@ def read_stdout(proc, callback, full_proc):
 
 def launch_listener():
     proc = subprocess.Popen(
-        [LISTENER_PATH],
+        [LISTENER_PATH, "2"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -75,7 +74,7 @@ def process_incoming_json(type, json_string):
         #print("Invalid JSON string")
 
 def startSimulation(pathName, fedName):
-    manager = ProcessManager(process_incoming_json)
+    manager = ProcessManager(process_incoming_json,fedName)
     full_path=os.path.join(os.getcwd(),pathName)
     message = f"LOAD {full_path};"
     manager.write_message(message)
@@ -89,7 +88,7 @@ def startSimulation(pathName, fedName):
 def graceful_shutdown(proc):
     print("Graceful shutdown…")
     send_control(proc, "CONTROLSIGNAL ALL ENDFEDERATE\n")
-    time.sleep(1.5)  # short grace period
+    time.sleep(2)  # short grace period
 
 
 print("Starting rtig...")
@@ -97,7 +96,6 @@ rtig_process = subprocess.Popen(["rtig"])
 time.sleep(2)
 
 listener_proc, listener_thread = launch_listener()
-time.sleep(2)
 simA = startSimulation("SimA.jstrx", "SimA")
 message = f"RUNMODEL;"
 simA.write_message(message)
@@ -105,21 +103,24 @@ simB = startSimulation("SimB.jstrx", "SimB")
 message = f"RUNMODEL;"
 simB.write_message(message)
 
-
-
 running = True
-while running:
-    try:
-        kind, payload = events.get(timeout=0.1)  # wait briefly for events
-    except queue.Empty:
-        continue
 
-    if kind == "shutdown":
-        graceful_shutdown(listener_proc)
-        simA.write_message("CLOSE;")
-        time.sleep(2)
-        simA.cleanup()
-        simB.write_message("CLOSE;")
-        time.sleep(2)
-        simB.cleanup()
-        running = False
+try:
+    while running:
+        try:
+            kind, payload = events.get(timeout=0.1)  # wait briefly for events
+        except queue.Empty:
+            continue
+        if kind == "shutdown":
+            running = False
+finally:
+    graceful_shutdown(listener_proc)
+    simA.write_message("CLOSE;")
+    time.sleep(2)
+    simA.stop()
+
+    simB.write_message("CLOSE;")
+    time.sleep(2)
+    simB.stop()      
+    print("All processes stopped. Exiting...")
+  
