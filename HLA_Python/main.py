@@ -15,6 +15,10 @@ LISTENER_PATH = "C:\\dev\\tools\\certi\\ListenerFederate\\x64\\Debug\\ListenerFe
 shutdown_now = threading.Event()
 events = queue.Queue()  
 
+print("CERTI_HOST =", os.getenv("CERTI_HOST"))
+print("CERTI_TCP_PORT =", os.getenv("CERTI_TCP_PORT"))
+print("CERTI_UDP_PORT =", os.getenv("CERTI_UDP_PORT"))
+
 def send_control(p, line):
     try:
         if p.stdin:
@@ -50,12 +54,12 @@ def read_stdout(proc, callback, full_proc):
         if line:
             callback(line,proc)
 
-def launch_listener():
+def launch_listener(num_feds):
     proc = subprocess.Popen(
-        [LISTENER_PATH, "2"],
+        [LISTENER_PATH, str(num_feds)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,   #subprocess.PIPE,
         text=True,
         encoding="utf-8",
         bufsize=1,
@@ -91,18 +95,62 @@ def graceful_shutdown(proc):
     time.sleep(2)  # short grace period
 
 
-print("Starting rtig...")
-rtig_process = subprocess.Popen(["rtig"])
-time.sleep(2)
+def start_rtig():
+    print("Starting rtig...")
+    # Kill any existing RTIG
+    subprocess.run(
+        ["taskkill", "/F", "/IM", "rtig.exe"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    time.sleep(0.5)
+    # Start RTIG with high verbosity and fixed listen IP
+    rtig = subprocess.Popen(
+        ["rtig", "-v", "2", "-l", "127.0.0.1"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        bufsize=1
+    )
+    # Wait until RTIG is fully up (or fails)
+    while True:
+        line = rtig.stdout.readline()
+        if not line:
+            raise RuntimeError("RTIG exited before becoming ready.")
+        print("[RTIG]", line.rstrip())
+        if "RTIG up and running" in line:
+            break
+        if ("aborted" in line or
+            "exiting" in line or
+            "Network Error" in line):
+            raise RuntimeError("RTIG failed to start (see output above).")
+    return rtig
 
-listener_proc, listener_thread = launch_listener()
+rtig = start_rtig()
+
+listener_proc, listener_thread = launch_listener(5)
+time.sleep(1)
 simA = startSimulation("SimA.jstrx", "SimA")
 message = f"RUNMODEL;"
 simA.write_message(message)
+time.sleep(1)
 simB = startSimulation("SimB.jstrx", "SimB")
 message = f"RUNMODEL;"
 simB.write_message(message)
-
+time.sleep(1)
+simC = startSimulation("SimC.jstrx", "SimC")
+message = f"RUNMODEL;"
+simC.write_message(message)
+time.sleep(1)
+simD = startSimulation("Earthmoving.jstrx", "SimD")
+message = f"RUNMODEL;"
+simD.write_message(message)
+time.sleep(1)
+simE = startSimulation("Earthmoving.jstrx", "SimE")
+message = f"RUNMODEL;"
+simE.write_message(message)
+time.sleep(1)
 running = True
 
 try:
@@ -115,6 +163,7 @@ try:
             running = False
 finally:
     graceful_shutdown(listener_proc)
+
     simA.write_message("CLOSE;")
     time.sleep(2)
     simA.stop()
